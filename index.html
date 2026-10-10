@@ -1,0 +1,621 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PingLink — WhatsApp Link Generator with QR Code &amp; Bulk Links</title>
+<meta name="description" content="PingLink is a free WhatsApp link generator: turn any phone number plus a prefilled message into a wa.me click-to-chat link, get a QR code instantly, and create bulk links from a pasted contact list.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@500;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
+<style>
+  body{font-family:'Inter',system-ui,sans-serif;background:#F2F7F3;color:#12271C;}
+  h1,h2,h3,.font-display{font-family:'Sora',sans-serif;}
+  .studio-grid{background-image:radial-gradient(#C9E7D2 1.2px,transparent 1.2px);background-size:22px 22px;}
+  .phone-shell{border-radius:2.2rem;border:10px solid #0B3D2E;background:#ECE5DD;box-shadow:0 24px 50px -18px rgba(7,94,84,.45);}
+  .bubble{background:#DCF8C6;border-radius:.9rem .9rem .2rem .9rem;box-shadow:0 1px 1px rgba(0,0,0,.13);}
+  .tick{color:#34B7F1;}
+  input:focus,textarea:focus,select:focus{outline:none;border-color:#25D366 !important;box-shadow:0 0 0 3px rgba(37,211,102,.25);}
+  .chip{transition:all .15s ease;}
+  .chip:hover{border-color:#25D366;background:#E9FBF0;}
+  .faq-body{display:none;}
+  .faq-item.open .faq-body{display:block;}
+  .faq-item.open .faq-arrow{transform:rotate(180deg);}
+  .faq-arrow{transition:transform .2s ease;}
+  #qrBox svg{width:100%;height:auto;}
+</style>
+<script id="lib-pinglink">
+var PingLinkLib = {
+  // Strip everything except digits; drop a leading international "00" prefix.
+  cleanPhone: function (raw) {
+    if (raw === null || raw === undefined) return '';
+    var s = String(raw).trim();
+    var digits = s.replace(/\D/g, '');
+    if (digits.indexOf('00') === 0) digits = digits.slice(2);
+    return digits;
+  },
+
+  // wa.me numbers: full international format, 7-15 digits, never starting with 0.
+  validatePhone: function (digits) {
+    if (!digits) return { ok: false, error: 'Enter a phone number with its country code.' };
+    if (!/^\d+$/.test(digits)) return { ok: false, error: 'The number may only contain digits.' };
+    if (digits.charAt(0) === '0') return { ok: false, error: 'Start with the country code, not a leading 0.' };
+    if (digits.length < 7) return { ok: false, error: 'That number is too short — include the country code (7–15 digits total).' };
+    if (digits.length > 15) return { ok: false, error: 'That number is too long — phone numbers are at most 15 digits including the country code.' };
+    return { ok: true, error: '' };
+  },
+
+  // Build the wa.me link; message is optional and URL-encoded when present.
+  buildLink: function (phoneRaw, message) {
+    var digits = PingLinkLib.cleanPhone(phoneRaw);
+    var v = PingLinkLib.validatePhone(digits);
+    if (!v.ok) return { ok: false, error: v.error, link: '', digits: digits };
+    var link = 'https://wa.me/' + digits;
+    var msg = (message === null || message === undefined) ? '' : String(message).trim();
+    if (msg) link += '?text=' + encodeURIComponent(msg);
+    return { ok: true, error: '', link: link, digits: digits };
+  },
+
+  // Parse one bulk line: "Name, Number" / "Name,Number" / just a number.
+  // Splits on the LAST comma so names may contain commas? No — first comma is fine,
+  // but a line without any comma is treated as a bare number with an empty name.
+  parseBulkLine: function (line) {
+    var raw = (line === null || line === undefined) ? '' : String(line).trim();
+    if (!raw) return null;
+    var name = '', numberPart = raw;
+    var idx = raw.lastIndexOf(',');
+    if (idx >= 0) {
+      name = raw.slice(0, idx).trim();
+      numberPart = raw.slice(idx + 1).trim();
+    }
+    return { name: name, number: numberPart };
+  },
+
+  // Parse a whole pasted list into link rows. Blank lines are skipped.
+  // Returns { rows: [{name, number, digits, link, ok, error}], okCount, errorCount }
+  parseBulk: function (text, message) {
+    var rows = [];
+    var lines = String(text === null || text === undefined ? '' : text).split(/\r?\n/);
+    for (var i = 0; i < lines.length; i++) {
+      var parsed = PingLinkLib.parseBulkLine(lines[i]);
+      if (!parsed) continue;
+      var personalised = PingLinkLib.applyTemplate(message, parsed.name);
+      var built = PingLinkLib.buildLink(parsed.number, personalised);
+      rows.push({
+        name: parsed.name,
+        number: parsed.number,
+        digits: built.digits,
+        link: built.ok ? built.link : '',
+        ok: built.ok,
+        error: built.error
+      });
+    }
+    var okCount = 0;
+    for (var j = 0; j < rows.length; j++) if (rows[j].ok) okCount++;
+    return { rows: rows, okCount: okCount, errorCount: rows.length - okCount };
+  },
+
+  // Render bulk rows as a copy-paste / CSV-friendly text block.
+  bulkToText: function (rows) {
+    var out = [];
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i];
+      if (!r.ok) continue;
+      out.push((r.name ? r.name + ' — ' : '') + r.link);
+    }
+    return out.join('\n');
+  },
+
+  // Render bulk rows as CSV (name,number,link). Quotes fields containing commas/quotes.
+  bulkToCSV: function (rows) {
+    function q(v) {
+      v = String(v === null || v === undefined ? '' : v);
+      return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
+    }
+    var out = ['name,number,link'];
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i];
+      if (!r.ok) continue;
+      out.push(q(r.name) + ',' + q(r.digits) + ',' + q(r.link));
+    }
+    return out.join('\n');
+  },
+
+  // Personalise a message template: replaces {name} with the contact's name.
+  applyTemplate: function (template, name) {
+    var t = (template === null || template === undefined) ? '' : String(template);
+    var n = (name === null || name === undefined) ? '' : String(name);
+    return t.replace(/\{name\}/gi, n || 'there');
+  }
+};
+if (typeof module !== 'undefined' && module.exports) { module.exports = PingLinkLib; }
+
+</script>
+</head>
+<body id="top" class="antialiased">
+
+<!-- HEADER -->
+<header class="sticky top-0 z-50 bg-white/90 backdrop-blur border-b border-emerald-100 shadow-[0_1px_0_rgba(7,94,84,.06)]">
+  <div class="mx-auto max-w-6xl px-4 sm:px-6 h-16 flex items-center justify-between">
+    <a href="#top" class="flex items-center gap-2.5">
+      <span class="w-9 h-9 rounded-2xl bg-[#25D366] grid place-items-center shadow-md shadow-emerald-300">
+        <svg viewBox="0 0 24 24" class="w-5 h-5 fill-white" aria-hidden="true"><path d="M12 2a10 10 0 0 0-8.6 15.1L2 22l5-1.3A10 10 0 1 0 12 2zm5.2 14.2c-.2.6-1.3 1.2-1.8 1.2-.5.1-1 .2-3.4-.7-2.9-1.2-4.7-4.1-4.9-4.3-.1-.2-1.1-1.5-1.1-2.9s.7-2 1-2.3c.2-.3.5-.3.7-.3h.5c.2 0 .4 0 .6.5l.9 2.1c.1.2.1.4 0 .6l-.4.6-.4.5c-.1.1-.3.3-.1.6.2.3.8 1.4 1.8 2.2 1.2 1.1 2.3 1.5 2.6 1.6.3.1.5.1.7-.1l1-1.2c.2-.3.4-.2.7-.1l2.1 1c.3.2.5.3.6.4 0 .1 0 .7-.2 1.2z"/></svg>
+      </span>
+      <span class="font-display font-800 text-xl tracking-tight" style="font-weight:800">Ping<span class="text-[#128C7E]">Link</span></span>
+    </a>
+    <nav class="flex items-center gap-2 sm:gap-4 text-sm font-semibold">
+      <a href="#top" class="px-3 py-2 rounded-full hover:bg-emerald-50 text-[#075E54]">Home</a>
+      <a href="https://fixoraa.tech" class="px-3 py-2 rounded-full bg-[#075E54] text-white hover:bg-[#128C7E] transition">More Tools</a>
+    </nav>
+  </div>
+</header>
+
+<!-- HERO -->
+<section class="studio-grid border-b border-emerald-100">
+  <div class="mx-auto max-w-6xl px-4 sm:px-6 pt-10 pb-8 text-center">
+    <span class="inline-flex items-center gap-2 bg-[#075E54] text-white text-xs font-bold px-3.5 py-1.5 rounded-full shadow">● Unlimited Free Usage <span class="font-medium text-emerald-200">· no signup · no watermark</span></span>
+    <h1 class="mt-5 text-4xl sm:text-5xl font-extrabold leading-tight text-[#075E54]">WhatsApp Link Generator</h1>
+    <p class="mt-4 max-w-2xl mx-auto text-base sm:text-lg text-slate-600">Drop in a phone number, add a ready-to-send message, and PingLink builds your <strong>wa.me</strong> click-to-chat link, a scannable QR code, and even a whole batch of links from a pasted list — all in your browser.</p>
+  </div>
+</section>
+
+<!-- TOP AD -->
+<div class="no-print mx-auto max-w-6xl px-4 sm:px-6 pt-4" role="complementary" aria-label="Advertisement">
+  <div class="mx-auto text-center" style="max-width:728px">
+    <span class="block text-[10px] tracking-[0.18em] uppercase text-slate-400 mb-1.5">Advertisement</span>
+    <div class="flex justify-center overflow-hidden">
+      <div class="origin-top scale-[0.44] sm:scale-100 shrink-0">
+        <script>
+          atOptions = { 'key' : '4e68ac77881c17fe128a46565d9a4e8c', 'format' : 'iframe', 'height' : 90, 'width' : 728, 'params' : {} };
+        </script>
+        <script src="https://www.highrevenueformat.com/4e68ac77881c17fe128a46565d9a4e8c/invoke.js"></script>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- LINK STUDIO -->
+<main class="mx-auto max-w-6xl px-4 sm:px-6 py-8">
+  <div class="grid lg:grid-cols-5 gap-6 items-start">
+
+    <!-- Composer -->
+    <section class="lg:col-span-3 bg-white rounded-3xl border border-emerald-100 shadow-xl shadow-emerald-100/60 p-5 sm:p-7" aria-label="Link composer">
+      <h2 class="font-display text-xl font-bold text-[#075E54] flex items-center gap-2"><span class="w-7 h-7 rounded-lg bg-[#25D366] text-white grid place-items-center text-sm font-extrabold">1</span> Compose your link</h2>
+
+      <label for="phoneInput" class="block mt-6 text-sm font-semibold text-slate-700">Phone number <span class="font-normal text-slate-400">(with country code, e.g. 91 98765 43210 or +1 555 123 4567)</span></label>
+      <input id="phoneInput" type="tel" inputmode="tel" autocomplete="off" placeholder="+91 98765 43210"
+        class="mt-2 w-full rounded-2xl border-2 border-slate-200 px-4 py-3.5 text-lg font-semibold tracking-wide placeholder:font-normal placeholder:text-slate-300">
+      <p id="phoneMsg" class="mt-2 text-sm min-h-[1.25rem]"></p>
+
+      <label for="msgInput" class="block mt-4 text-sm font-semibold text-slate-700">Prefilled message <span class="font-normal text-slate-400">(optional — appears typed &amp; ready to send)</span></label>
+      <textarea id="msgInput" rows="4" placeholder="Hi! I would like to know more about…"
+        class="mt-2 w-full rounded-2xl border-2 border-slate-200 px-4 py-3 text-[15px] placeholder:text-slate-300 resize-y"></textarea>
+      <div class="mt-1.5 flex items-center justify-between text-xs text-slate-400">
+        <span>Tip: line breaks and emoji are encoded automatically.</span>
+        <span><span id="charCount">0</span> characters</span>
+      </div>
+
+      <p class="mt-5 text-xs font-bold uppercase tracking-wider text-slate-400">Message starters</p>
+      <div class="mt-2 flex flex-wrap gap-2" id="presetRow">
+        <button type="button" data-preset="Hi! I am interested in your tutoring classes. Could you please share the schedule, batch timings and fees?" class="chip text-sm border-2 border-slate-200 rounded-full px-3.5 py-1.5 font-medium">🎓 Class enquiry</button>
+        <button type="button" data-preset="Hello, I would like to book a free demo session. Please let me know which slots are available this week." class="chip text-sm border-2 border-slate-200 rounded-full px-3.5 py-1.5 font-medium">📅 Book a demo</button>
+        <button type="button" data-preset="Hi, I am following up on my job application. I would love to know the next steps in the process." class="chip text-sm border-2 border-slate-200 rounded-full px-3.5 py-1.5 font-medium">💼 Job follow-up</button>
+        <button type="button" data-preset="Hello! I need some guidance with my assignment. Could you help me understand the topic better?" class="chip text-sm border-2 border-slate-200 rounded-full px-3.5 py-1.5 font-medium">✏️ Study help</button>
+        <button type="button" data-preset="Hi, I saw your course listing and want to enrol. Please share the payment link and start date." class="chip text-sm border-2 border-slate-200 rounded-full px-3.5 py-1.5 font-medium">🚀 Course enrolment</button>
+      </div>
+
+      <div class="mt-7 bg-emerald-50 border border-emerald-200 rounded-2xl p-4">
+        <label for="linkOutput" class="text-xs font-bold uppercase tracking-wider text-[#075E54]">Your wa.me link</label>
+        <div class="mt-2 flex flex-col sm:flex-row gap-2">
+          <input id="linkOutput" type="text" readonly placeholder="Your link will appear here…"
+            class="flex-1 rounded-xl border border-emerald-200 bg-white px-3.5 py-3 text-sm font-mono text-[#075E54] placeholder:font-sans placeholder:text-slate-400">
+          <button id="copyBtn" type="button" class="rounded-xl bg-[#25D366] hover:bg-[#1fb857] text-white font-bold px-5 py-3 transition disabled:opacity-40 disabled:cursor-not-allowed" disabled>Copy link</button>
+        </div>
+        <div class="mt-3 flex flex-wrap gap-2">
+          <a id="openBtn" href="#" target="_blank" rel="noopener" class="pointer-events-none opacity-40 rounded-xl bg-[#075E54] text-white font-semibold px-4 py-2.5 text-sm transition">Open in WhatsApp ↗</a>
+          <button id="shortenNote" type="button" class="rounded-xl border border-emerald-300 text-[#075E54] font-semibold px-4 py-2.5 text-sm hover:bg-white transition">Why no URL shortener?</button>
+        </div>
+        <p id="shortenText" class="hidden mt-3 text-sm text-slate-600">wa.me links are already short and official. Third-party shorteners hide the destination, which makes people hesitate to tap. A clean wa.me link shows the number and builds trust — keep it as it is.</p>
+        <p id="copyMsg" class="mt-2 text-sm text-[#128C7E] font-semibold min-h-[1.25rem]"></p>
+      </div>
+    </section>
+
+    <!-- Preview + QR -->
+    <aside class="lg:col-span-2 space-y-6">
+      <section class="bg-white rounded-3xl border border-emerald-100 shadow-xl shadow-emerald-100/60 p-5 sm:p-6" aria-label="Chat preview">
+        <h2 class="font-display text-xl font-bold text-[#075E54] flex items-center gap-2"><span class="w-7 h-7 rounded-lg bg-[#25D366] text-white grid place-items-center text-sm font-extrabold">2</span> Live preview</h2>
+        <div class="phone-shell mt-5 mx-auto max-w-[280px] overflow-hidden">
+          <div class="bg-[#075E54] text-white px-4 py-3 flex items-center gap-3">
+            <span class="w-9 h-9 rounded-full bg-[#25D366] grid place-items-center font-display font-bold" id="avatarLetter">?</span>
+            <div class="leading-tight">
+              <p class="font-semibold text-sm" id="previewNumber">Your contact</p>
+              <p class="text-[11px] text-emerald-200">online</p>
+            </div>
+          </div>
+          <div class="p-4 min-h-[150px] flex flex-col justify-end gap-2" style="background-image:radial-gradient(rgba(7,94,84,.08) 1px,transparent 1px);background-size:14px 14px;">
+            <div class="bubble self-end max-w-[85%] px-3 py-2 text-[13px] leading-snug">
+              <span id="previewMsg">Your prefilled message will appear here, typed and ready for the visitor to send.</span>
+              <span class="block text-right text-[10px] text-slate-500 mt-1">now <span class="tick font-bold">✓✓</span></span>
+            </div>
+          </div>
+        </div>
+        <p class="mt-3 text-center text-xs text-slate-400">This is exactly what a visitor sees after tapping your link.</p>
+      </section>
+
+      <section class="bg-[#075E54] rounded-3xl shadow-xl shadow-emerald-200/60 p-5 sm:p-6 text-white" aria-label="QR code">
+        <h2 class="font-display text-xl font-bold flex items-center gap-2"><span class="w-7 h-7 rounded-lg bg-white text-[#075E54] grid place-items-center text-sm font-extrabold">3</span> QR code</h2>
+        <p class="mt-2 text-sm text-emerald-100">Print it on a poster, notebook or classroom board — one scan opens the chat.</p>
+        <div class="mt-4 bg-white rounded-2xl p-4 grid place-items-center min-h-[212px]">
+          <div id="qrBox" class="w-[180px]">
+            <p class="text-slate-400 text-sm text-center" id="qrEmpty">Add a valid number and your QR code will appear here.</p>
+          </div>
+        </div>
+        <button id="qrDownload" type="button" class="mt-4 w-full rounded-xl bg-[#25D366] hover:bg-[#1fb857] text-white font-bold px-5 py-3 transition disabled:opacity-40 disabled:cursor-not-allowed" disabled>Download QR as PNG</button>
+      </section>
+    </aside>
+  </div>
+
+  <!-- BULK STUDIO -->
+  <section class="mt-8 bg-white rounded-3xl border border-emerald-100 shadow-xl shadow-emerald-100/60 p-5 sm:p-7" aria-label="Bulk link generator">
+    <h2 class="font-display text-xl sm:text-2xl font-bold text-[#075E54] flex items-center gap-2"><span class="w-7 h-7 rounded-lg bg-[#25D366] text-white grid place-items-center text-sm font-extrabold">4</span> Bulk link studio</h2>
+    <p class="mt-2 text-slate-600 text-[15px]">Messaging a whole class, batch or applicant list? Paste one contact per line as <code class="bg-emerald-50 px-1.5 py-0.5 rounded font-semibold text-[#075E54]">Name, Number</code> and PingLink builds a personal link for everyone. Use <code class="bg-emerald-50 px-1.5 py-0.5 rounded font-semibold text-[#075E54]">{name}</code> in the shared message and it is swapped for each person's name.</p>
+    <div class="grid md:grid-cols-2 gap-5 mt-5">
+      <div>
+        <label for="bulkInput" class="text-sm font-semibold text-slate-700">Contact list</label>
+        <textarea id="bulkInput" rows="7" spellcheck="false" placeholder="Aarav Sharma, 919876543210&#10;Meera Iyer, 919123456780&#10;John Carter, 14155552671"
+          class="mt-2 w-full rounded-2xl border-2 border-slate-200 px-4 py-3 font-mono text-sm placeholder:text-slate-300 resize-y"></textarea>
+        <label for="bulkMsg" class="block mt-4 text-sm font-semibold text-slate-700">Shared message <span class="font-normal text-slate-400">(optional)</span></label>
+        <textarea id="bulkMsg" rows="3" placeholder="Hi {name}! Your class link for tomorrow is ready."
+          class="mt-2 w-full rounded-2xl border-2 border-slate-200 px-4 py-3 text-[15px] placeholder:text-slate-300 resize-y"></textarea>
+        <button id="bulkBtn" type="button" class="mt-4 w-full rounded-xl bg-[#075E54] hover:bg-[#128C7E] text-white font-bold px-5 py-3.5 transition">Generate bulk links</button>
+        <p id="bulkMsgOut" class="mt-2 text-sm min-h-[1.25rem]"></p>
+      </div>
+      <div>
+        <div class="flex items-center justify-between">
+          <p class="text-sm font-semibold text-slate-700">Results</p>
+          <p id="bulkSummary" class="text-xs font-semibold text-slate-400"></p>
+        </div>
+        <div id="bulkResults" class="mt-2 rounded-2xl border-2 border-dashed border-slate-200 min-h-[220px] max-h-[380px] overflow-auto p-3">
+          <p class="text-slate-400 text-sm text-center pt-16">Your generated links will be listed here, one per contact.</p>
+        </div>
+        <div class="mt-3 flex gap-2">
+          <button id="bulkCopy" type="button" class="flex-1 rounded-xl bg-[#25D366] hover:bg-[#1fb857] text-white font-bold px-4 py-3 transition disabled:opacity-40 disabled:cursor-not-allowed" disabled>Copy all links</button>
+          <button id="bulkCsv" type="button" class="flex-1 rounded-xl border-2 border-[#075E54] text-[#075E54] font-bold px-4 py-3 hover:bg-emerald-50 transition disabled:opacity-40 disabled:cursor-not-allowed" disabled>Download CSV</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- HOW IT WORKS -->
+  <section class="mt-8 grid sm:grid-cols-3 gap-4">
+    <div class="bg-white rounded-3xl border border-emerald-100 p-5">
+      <p class="text-3xl">🔗</p>
+      <h3 class="font-display font-bold mt-2 text-[#075E54]">One tap, straight to chat</h3>
+      <p class="text-sm text-slate-600 mt-1">No saved contacts, no searching for names. A wa.me link opens a conversation with you instantly, on phone or desktop.</p>
+    </div>
+    <div class="bg-white rounded-3xl border border-emerald-100 p-5">
+      <p class="text-3xl">✍️</p>
+      <h3 class="font-display font-bold mt-2 text-[#075E54]">Message pre-typed</h3>
+      <p class="text-sm text-slate-600 mt-1">Visitors land with your question already written. They just press send, so more of them actually start the conversation.</p>
+    </div>
+    <div class="bg-white rounded-3xl border border-emerald-100 p-5">
+      <p class="text-3xl">🔒</p>
+      <h3 class="font-display font-bold mt-2 text-[#075E54]">Private by design</h3>
+      <p class="text-sm text-slate-600 mt-1">Everything runs in your browser. Numbers and lists are never uploaded, stored or tracked by PingLink.</p>
+    </div>
+  </section>
+</main>
+
+<!-- BOTTOM AD -->
+<div class="no-print mx-auto max-w-6xl px-4 sm:px-6 pb-4" role="complementary" aria-label="Advertisement">
+  <div class="mx-auto text-center" style="max-width:728px">
+    <span class="block text-[10px] tracking-[0.18em] uppercase text-slate-400 mb-1.5">Advertisement</span>
+    <div class="flex justify-center overflow-hidden">
+      <script async src="https://js.wpadmngr.com/static/adManager.js" data-admpid="464498"></script>
+    </div>
+  </div>
+</div>
+
+<!-- ARTICLE -->
+<article id="article" class="mx-auto max-w-4xl px-4 sm:px-6 py-10">
+  <h2 class="font-display text-3xl font-extrabold text-[#075E54]">WhatsApp Links Explained: The Complete Guide to Click-to-Chat for Teachers, Students and Job Seekers</h2>
+
+  <p class="mt-5 leading-relaxed text-slate-700">Every day, millions of conversations on WhatsApp begin the awkward way: someone copies a phone number from a poster, a PDF or a social media bio, saves it as a contact with a name they will forget by next week, opens WhatsApp, searches for that contact, and only then types their question. Halfway through that clumsy chain, many people simply give up. A WhatsApp link removes every one of those steps. It is a short web address — built on the official wa.me domain — that opens a chat with a specific phone number the moment it is tapped, even if that number was never saved. Add a prefilled message and the visitor's first question is already typed for them. They only have to press send. PingLink exists to build those links properly: fast, correctly formatted, with a QR code for print, and in bulk for whole lists of people.</p>
+
+  <h3 class="font-display text-xl font-bold mt-8 text-[#075E54]">How a wa.me link actually works</h3>
+  <p class="mt-3 leading-relaxed text-slate-700">The structure is deliberately simple. The base of every link is <em>https://wa.me/</em> followed by the phone number in full international format — country code first, then the subscriber number, with no plus sign, no spaces, no brackets and no dashes. If you want a prefilled message, you append <em>?text=</em> and the message, encoded so that spaces, line breaks, punctuation and emoji survive the journey through a URL. That encoding step is where most hand-made links fall apart: a raw ampersand can chop a message in half, an unencoded question mark can confuse the address, and a forgotten country code produces a link that opens nothing at all. A generator like PingLink handles the cleaning and encoding silently, so the link you copy is the link that works. When a visitor taps it on a phone, WhatsApp opens directly. On a computer, it hands off to WhatsApp Web or the desktop app. Neither side needs the other's number saved in advance, which is precisely why these links convert so much better than a number printed as plain text.</p>
+
+  <h3 class="font-display text-xl font-bold mt-8 text-[#075E54]">Why this matters for study and careers</h3>
+  <p class="mt-3 leading-relaxed text-slate-700">The study and career world runs on quick questions. A student wants to ask a tutor about batch timings before the seats fill. A coaching institute wants enquiries from an Instagram post to land in a chat, not in a comment thread that gets buried. A job seeker wants to follow up on an application while the recruiter still remembers their name. A training centre wants to remind forty enrolled students about tomorrow's session without saving forty contacts. In every one of these situations, friction is the enemy: each extra step between "I want to ask" and "message sent" quietly deletes a percentage of your enquiries, applications and reminders. A click-to-chat link collapses the journey to a single tap, and a prefilled message does something subtler and just as valuable — it tells the visitor what a good first message looks like. "Hi, I am interested in your weekend physics batch" is a far better opener than a bare "hi", and people happily send it when it is already written for them.</p>
+
+  <h3 class="font-display text-xl font-bold mt-8 text-[#075E54]">Writing a prefilled message that gets replies</h3>
+  <p class="mt-3 leading-relaxed text-slate-700">The best prefilled messages share three qualities: they are short, specific and easy to send without editing. Short, because a wall of text in a chat bubble looks like homework; one or two sentences is the sweet spot. Specific, because the message should carry the context you would otherwise have to ask for — the course name, the job role, the batch, the city. And easy to send, because the visitor should never feel trapped by words that are not theirs; a friendly, neutral tone lets them press send and then continue in their own voice. It also helps to ask exactly one question. "Could you share the fees and schedule?" outperforms a paragraph containing five questions, because the receiver can answer it in a single reply. PingLink's message starters give you proven shapes for the most common study and career situations — class enquiries, demo bookings, application follow-ups, assignment help and course enrolment — and each one is meant to be edited, not worshipped. Swap in your course name, your role, your deadline, and the message becomes yours.</p>
+
+  <h3 class="font-display text-xl font-bold mt-8 text-[#075E54]">QR codes: the bridge from paper to chat</h3>
+  <p class="mt-3 leading-relaxed text-slate-700">A link is perfect for screens, but a great deal of study and career communication still happens on paper: the notice board outside a classroom, the flyer handed out at an education fair, the banner at a job expo, the first page of a printed study material pack, the visiting card a counsellor gives a parent. For all of those, PingLink generates a QR code of exactly the same link, downloadable as a PNG image. One scan with any phone camera and the chat opens with the message pre-typed — no typing a long URL, no misreading a digit. A few practical tips make printed codes work harder. Give the code quiet space around it; scanners need that white border. Print it at least two centimetres wide for arm's-length scanning, and bigger for posters that will be scanned from a step away. Always test the printed proof with your own phone before ordering five hundred copies. And place a short human instruction beside the code — "Scan to ask about admissions" converts far better than a naked square, because people scan when they know what they will get.</p>
+
+  <h3 class="font-display text-xl font-bold mt-8 text-[#075E54]">Bulk links: one list in, a personal link for everyone</h3>
+  <p class="mt-3 leading-relaxed text-slate-700">Teachers, coordinators and placement cells rarely message one person at a time. They message a batch, a class list, a shortlist of candidates. Creating those links one by one is exactly the kind of repetitive work that eats an afternoon. PingLink's bulk studio takes a pasted list — one contact per line, written as a name, a comma and the number — and returns a finished link for every valid row, flagging the rows it could not use and telling you why, instead of failing silently. The shared message can contain a {name} placeholder, which is replaced with each contact's own name, so a reminder to sixty students still greets each of them personally. The results can be copied as a clean text list or downloaded as a CSV file with name, number and link columns, ready to paste into a spreadsheet, a mail merge or a CRM. Because the list is processed entirely in your browser, sensitive contact details — students' personal numbers, applicants' phone numbers — never travel to a server. That matters more than convenience: a pasted class list is personal data, and tools that quietly upload it are a liability you do not need.</p>
+
+  <h3 class="font-display text-xl font-bold mt-8 text-[#075E54]">Formatting rules and the mistakes that break links</h3>
+  <p class="mt-3 leading-relaxed text-slate-700">Almost every broken WhatsApp link traces back to one of five mistakes. The first is forgetting the country code: a local number like 098765 43210 means nothing to wa.me, which needs the full international form, such as 919876543210 for India or 14155552671 for the United States. The second is keeping the plus sign, spaces or brackets from a copied number — the link format wants digits only, which is why PingLink strips everything else automatically. The third is a leading zero left in front of an area code, a habit from landline dialling that has no place in international format. The fourth is an unencoded message: spaces typed raw, or a "&amp;" symbol that splits the address into pieces the chat never sees. The fifth is testing on your own phone while logged into the same account and concluding the link is broken, when in fact a chat with yourself behaves oddly by design — test with a friend's phone or a second device instead. PingLink's live validation catches the first four mistakes as you type, explaining the problem in plain words and fixing what can be fixed safely.</p>
+
+  <h3 class="font-display text-xl font-bold mt-8 text-[#075E54]">Where to place your link so people actually use it</h3>
+  <p class="mt-3 leading-relaxed text-slate-700">A link only works where it can be seen at the moment of intent. For teachers and institutes, the highest-value placements are the Instagram and YouTube bios students already visit, the description under every demo lecture video, the header of the course page, and a pinned message in existing student groups inviting referrals. For job seekers, the link belongs on a CV shared as a PDF — recruiters reading on a phone can tap straight into a conversation — and in the contact section of a portfolio. For placement cells and training centres, it belongs in email signatures and on event banners via the QR code. Notice the pattern: every good placement sits one tap away from the moment someone thinks "I should ask about this". A link buried three menus deep, or printed without the QR code, is decoration. A link placed at the point of curiosity is a pipeline.</p>
+
+  <h3 class="font-display text-xl font-bold mt-8 text-[#075E54]">Good manners: consent, timing and trust</h3>
+  <p class="mt-3 leading-relaxed text-slate-700">A click-to-chat link is an invitation, and invitations carry etiquette. The person tapping your link is starting the conversation, which means consent is built in — they chose to message you. The reverse deserves care: a bulk list should only ever contain people who have a genuine relationship with you — your enrolled students, your applicants, your enquiries — and the links should be used to start individual, relevant conversations, not to blast identical promotions at strangers. WhatsApp actively restricts accounts that behave like spam machines, and a blocked number is a heavy price for a shortcut. Keep messages relevant, respect quiet hours in the receiver's time zone, answer promptly when someone does tap your link, and never buy or scrape contact lists. Trust is the entire reason a clean wa.me link outperforms a shady shortened one: people can see exactly whose number they are about to message. Protect that transparency and it will keep working for you.</p>
+
+  <h3 class="font-display text-xl font-bold mt-8 text-[#075E54]">PingLink in one paragraph</h3>
+  <p class="mt-3 leading-relaxed text-slate-700">PingLink is a small, focused studio for one job: turning phone numbers into conversations. It builds single links with prefilled messages, shows you a live preview of the chat your visitor will see, renders a print-ready QR code of the same link, and turns a pasted contact list into a full set of personalised links with a CSV export. It asks for no account, charges nothing, adds no watermark, and — because a class list or an applicant list is none of anyone else's business — it does all of this locally in your browser. Build the link once, place it wherever curiosity strikes, and let the conversations come to you.</p>
+
+  <h2 class="font-display text-2xl font-extrabold mt-12 text-[#075E54]">Frequently asked questions</h2>
+  <div class="mt-5 space-y-3" id="faqList">
+    <div class="faq-item bg-white border border-emerald-100 rounded-2xl overflow-hidden">
+      <button type="button" class="faq-toggle w-full flex items-center justify-between gap-3 text-left px-5 py-4 font-semibold text-[#075E54]">Is PingLink really free to use?<span class="faq-arrow text-[#25D366] font-extrabold">▾</span></button>
+      <div class="faq-body px-5 pb-5 text-slate-600 leading-relaxed">Yes. PingLink is completely free with unlimited usage — no signup, no paywall, no watermark on your links or QR codes. Create as many single and bulk links as you need.</div>
+    </div>
+    <div class="faq-item bg-white border border-emerald-100 rounded-2xl overflow-hidden">
+      <button type="button" class="faq-toggle w-full flex items-center justify-between gap-3 text-left px-5 py-4 font-semibold text-[#075E54]">Does the visitor need my number saved in their contacts?<span class="faq-arrow text-[#25D366] font-extrabold">▾</span></button>
+      <div class="faq-body px-5 pb-5 text-slate-600 leading-relaxed">No. That is the whole point of a wa.me link. Tapping it opens a chat with your number directly, whether or not it is saved in the visitor's contacts — and the same works in reverse for you.</div>
+    </div>
+    <div class="faq-item bg-white border border-emerald-100 rounded-2xl overflow-hidden">
+      <button type="button" class="faq-toggle w-full flex items-center justify-between gap-3 text-left px-5 py-4 font-semibold text-[#075E54]">What format should the phone number be in?<span class="faq-arrow text-[#25D366] font-extrabold">▾</span></button>
+      <div class="faq-body px-5 pb-5 text-slate-600 leading-relaxed">Use the full international format: country code followed by the number, digits only — for example 919876543210 for India or 14155552671 for the US. You can type it with spaces or a plus sign; PingLink cleans it automatically and warns you if something looks wrong.</div>
+    </div>
+    <div class="faq-item bg-white border border-emerald-100 rounded-2xl overflow-hidden">
+      <button type="button" class="faq-toggle w-full flex items-center justify-between gap-3 text-left px-5 py-4 font-semibold text-[#075E54]">How does the prefilled message work?<span class="faq-arrow text-[#25D366] font-extrabold">▾</span></button>
+      <div class="faq-body px-5 pb-5 text-slate-600 leading-relaxed">Anything you type in the message box is attached to the link. When a visitor taps it, WhatsApp opens with your message already typed in their box; they can edit it or simply press send. Line breaks and emoji are supported.</div>
+    </div>
+    <div class="faq-item bg-white border border-emerald-100 rounded-2xl overflow-hidden">
+      <button type="button" class="faq-toggle w-full flex items-center justify-between gap-3 text-left px-5 py-4 font-semibold text-[#075E54]">How do bulk links work?<span class="faq-arrow text-[#25D366] font-extrabold">▾</span></button>
+      <div class="faq-body px-5 pb-5 text-slate-600 leading-relaxed">Paste one contact per line in the form Name, Number into the bulk studio, add an optional shared message, and PingLink generates a personal wa.me link for every valid row. Use {name} in the shared message to greet each person by name, then copy all links or download them as a CSV.</div>
+    </div>
+    <div class="faq-item bg-white border border-emerald-100 rounded-2xl overflow-hidden">
+      <button type="button" class="faq-toggle w-full flex items-center justify-between gap-3 text-left px-5 py-4 font-semibold text-[#075E54]">Is my contact list uploaded anywhere?<span class="faq-arrow text-[#25D366] font-extrabold">▾</span></button>
+      <div class="faq-body px-5 pb-5 text-slate-600 leading-relaxed">No. PingLink runs entirely in your browser. Your numbers, messages and pasted lists are never sent to a server, stored or tracked — close the tab and everything is gone.</div>
+    </div>
+  </div>
+</article>
+
+<footer class="border-t border-emerald-100 bg-white">
+  <div class="mx-auto max-w-6xl px-4 sm:px-6 py-8 flex flex-col sm:flex-row items-center justify-between gap-3 text-sm text-slate-500">
+    <p class="font-display font-bold text-[#075E54]">PingLink</p>
+    <p>Free WhatsApp link, QR code and bulk link generator. Made for teachers, students and job seekers everywhere.</p>
+    <a href="#top" class="font-semibold text-[#128C7E] hover:underline">Back to top ↑</a>
+  </div>
+<p class="fx-credit" style="text-align:center;font-size:12.5px;opacity:.62;margin:10px auto 2px;letter-spacing:.01em">Made by <a href="https://fixoraa.tech" target="_blank" rel="noopener" style="color:inherit;font-weight:700;text-decoration:underline;text-underline-offset:2px">Fixoraa</a></p>
+</footer>
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    { "@type": "Question", "name": "Is PingLink really free to use?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. PingLink is completely free with unlimited usage — no signup, no paywall, no watermark on your links or QR codes. Create as many single and bulk links as you need." } },
+    { "@type": "Question", "name": "Does the visitor need my number saved in their contacts?", "acceptedAnswer": { "@type": "Answer", "text": "No. That is the whole point of a wa.me link. Tapping it opens a chat with your number directly, whether or not it is saved in the visitor's contacts — and the same works in reverse for you." } },
+    { "@type": "Question", "name": "What format should the phone number be in?", "acceptedAnswer": { "@type": "Answer", "text": "Use the full international format: country code followed by the number, digits only — for example 919876543210 for India or 14155552671 for the US. You can type it with spaces or a plus sign; PingLink cleans it automatically and warns you if something looks wrong." } },
+    { "@type": "Question", "name": "How does the prefilled message work?", "acceptedAnswer": { "@type": "Answer", "text": "Anything you type in the message box is attached to the link. When a visitor taps it, WhatsApp opens with your message already typed in their box; they can edit it or simply press send. Line breaks and emoji are supported." } },
+    { "@type": "Question", "name": "How do bulk links work?", "acceptedAnswer": { "@type": "Answer", "text": "Paste one contact per line in the form Name, Number into the bulk studio, add an optional shared message, and PingLink generates a personal wa.me link for every valid row. Use {name} in the shared message to greet each person by name, then copy all links or download them as a CSV." } },
+    { "@type": "Question", "name": "Is my contact list uploaded anywhere?", "acceptedAnswer": { "@type": "Answer", "text": "No. PingLink runs entirely in your browser. Your numbers, messages and pasted lists are never sent to a server, stored or tracked — close the tab and everything is gone." } }
+  ]
+}
+</script>
+
+<script>
+(function () {
+  var phoneInput = document.getElementById('phoneInput');
+  var msgInput = document.getElementById('msgInput');
+  var phoneMsg = document.getElementById('phoneMsg');
+  var linkOutput = document.getElementById('linkOutput');
+  var copyBtn = document.getElementById('copyBtn');
+  var openBtn = document.getElementById('openBtn');
+  var copyMsg = document.getElementById('copyMsg');
+  var charCount = document.getElementById('charCount');
+  var previewNumber = document.getElementById('previewNumber');
+  var previewMsg = document.getElementById('previewMsg');
+  var avatarLetter = document.getElementById('avatarLetter');
+  var qrBox = document.getElementById('qrBox');
+  var qrDownload = document.getElementById('qrDownload');
+  var currentLink = '';
+
+  function setQr(link) {
+    qrBox.innerHTML = '';
+    if (!link || typeof qrcode === 'undefined') {
+      qrBox.innerHTML = '<p class="text-slate-400 text-sm text-center">Add a valid number and your QR code will appear here.</p>';
+      qrDownload.disabled = true;
+      return;
+    }
+    try {
+      var qr = qrcode(0, 'M');
+      qr.addData(link);
+      qr.make();
+      qrBox.innerHTML = qr.createSvgTag({ cellSize: 6, margin: 4, scalable: true });
+      qrDownload.disabled = false;
+    } catch (e) {
+      qrBox.innerHTML = '<p class="text-slate-400 text-sm text-center">That link is too long for a QR code. Shorten the message a little.</p>';
+      qrDownload.disabled = true;
+    }
+  }
+
+  function refresh() {
+    charCount.textContent = msgInput.value.length;
+    var raw = phoneInput.value;
+    var built = PingLinkLib.buildLink(raw, msgInput.value);
+    if (!raw.trim()) {
+      phoneMsg.textContent = '';
+      phoneMsg.className = 'mt-2 text-sm min-h-[1.25rem]';
+    } else if (!built.ok) {
+      phoneMsg.textContent = '⚠ ' + built.error;
+      phoneMsg.className = 'mt-2 text-sm min-h-[1.25rem] text-red-600 font-medium';
+    } else {
+      phoneMsg.textContent = '✓ Looks good — ' + built.digits.length + ' digits, country code included.';
+      phoneMsg.className = 'mt-2 text-sm min-h-[1.25rem] text-[#128C7E] font-medium';
+    }
+    currentLink = built.ok ? built.link : '';
+    linkOutput.value = currentLink;
+    copyBtn.disabled = !built.ok;
+    if (built.ok) {
+      openBtn.href = built.link;
+      openBtn.classList.remove('pointer-events-none', 'opacity-40');
+      previewNumber.textContent = '+' + built.digits;
+      avatarLetter.textContent = built.digits.charAt(0);
+    } else {
+      openBtn.href = '#';
+      openBtn.classList.add('pointer-events-none', 'opacity-40');
+      previewNumber.textContent = 'Your contact';
+      avatarLetter.textContent = '?';
+    }
+    previewMsg.textContent = msgInput.value.trim() ? msgInput.value : 'Your prefilled message will appear here, typed and ready for the visitor to send.';
+    setQr(currentLink);
+  }
+
+  phoneInput.addEventListener('input', refresh);
+  msgInput.addEventListener('input', refresh);
+
+  document.getElementById('presetRow').addEventListener('click', function (e) {
+    var btn = e.target.closest('[data-preset]');
+    if (!btn) return;
+    msgInput.value = btn.getAttribute('data-preset');
+    refresh();
+    msgInput.focus();
+  });
+
+  document.getElementById('shortenNote').addEventListener('click', function () {
+    document.getElementById('shortenText').classList.toggle('hidden');
+  });
+
+  function copyText(text, done) {
+    function fallback() {
+      var ta = document.createElement('textarea');
+      ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); } catch (e) {}
+      document.body.removeChild(ta); done();
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, fallback);
+    } else fallback();
+  }
+
+  copyBtn.addEventListener('click', function () {
+    if (!currentLink) return;
+    copyText(currentLink, function () {
+      copyMsg.textContent = '✓ Link copied to clipboard.';
+      setTimeout(function () { copyMsg.textContent = ''; }, 2500);
+    });
+  });
+
+  qrDownload.addEventListener('click', function () {
+    if (!currentLink || typeof qrcode === 'undefined') return;
+    try {
+      var qr = qrcode(0, 'M');
+      qr.addData(currentLink);
+      qr.make();
+      var url = qr.createDataURL(10, 16);
+      var img = new Image();
+      img.onload = function () {
+        var c = document.createElement('canvas');
+        c.width = img.width; c.height = img.height;
+        var ctx = c.getContext('2d');
+        ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, c.width, c.height);
+        ctx.drawImage(img, 0, 0);
+        var a = document.createElement('a');
+        a.download = 'pinglink-qr.png';
+        a.href = c.toDataURL('image/png');
+        a.click();
+      };
+      img.src = url;
+    } catch (e) {}
+  });
+
+  // FAQ toggles
+  var toggles = document.querySelectorAll('.faq-toggle');
+  for (var i = 0; i < toggles.length; i++) {
+    toggles[i].addEventListener('click', function () {
+      this.parentElement.classList.toggle('open');
+    });
+  }
+
+  // Bulk studio
+  var bulkInput = document.getElementById('bulkInput');
+  var bulkMsgInput = document.getElementById('bulkMsg');
+  var bulkResults = document.getElementById('bulkResults');
+  var bulkSummary = document.getElementById('bulkSummary');
+  var bulkMsgOut = document.getElementById('bulkMsgOut');
+  var bulkCopy = document.getElementById('bulkCopy');
+  var bulkCsv = document.getElementById('bulkCsv');
+  var lastBulk = null;
+
+  function esc(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  document.getElementById('bulkBtn').addEventListener('click', function () {
+    if (!bulkInput.value.trim()) {
+      bulkMsgOut.textContent = '⚠ Paste at least one contact first — one per line, like: Aarav Sharma, 919876543210';
+      bulkMsgOut.className = 'mt-2 text-sm min-h-[1.25rem] text-red-600 font-medium';
+      return;
+    }
+    var res = PingLinkLib.parseBulk(bulkInput.value, bulkMsgInput.value);
+    lastBulk = res;
+    if (!res.rows.length) {
+      bulkMsgOut.textContent = '⚠ No contacts found in that list. Check the format: Name, Number — one per line.';
+      bulkMsgOut.className = 'mt-2 text-sm min-h-[1.25rem] text-red-600 font-medium';
+      return;
+    }
+    var html = '';
+    for (var i = 0; i < res.rows.length; i++) {
+      var r = res.rows[i];
+      if (r.ok) {
+        html += '<div class="flex items-start justify-between gap-3 py-2.5 border-b border-emerald-50 last:border-0">' +
+          '<div class="min-w-0"><p class="font-semibold text-sm text-slate-700 truncate">' + esc(r.name || 'Contact') + ' <span class="font-normal text-slate-400">· +' + esc(r.digits) + '</span></p>' +
+          '<a href="' + esc(r.link) + '" target="_blank" rel="noopener" class="text-[13px] text-[#128C7E] font-mono break-all hover:underline">' + esc(r.link) + '</a></div>' +
+          '<button type="button" data-copy="' + esc(r.link) + '" class="shrink-0 text-xs font-bold bg-emerald-50 hover:bg-emerald-100 text-[#075E54] rounded-lg px-2.5 py-1.5">Copy</button></div>';
+      } else {
+        html += '<div class="py-2.5 border-b border-emerald-50 last:border-0"><p class="font-semibold text-sm text-red-600">' + esc(r.name || r.number || 'Row') + '</p><p class="text-[13px] text-red-500">⚠ ' + esc(r.error) + '</p></div>';
+      }
+    }
+    bulkResults.innerHTML = html;
+    bulkSummary.textContent = res.okCount + ' link' + (res.okCount === 1 ? '' : 's') + ' ready' + (res.errorCount ? ' · ' + res.errorCount + ' row' + (res.errorCount === 1 ? '' : 's') + ' need fixing' : '');
+    bulkMsgOut.textContent = res.okCount ? '✓ Done — links are listed on the right.' : '⚠ None of those numbers worked. Check the country codes and try again.';
+    bulkMsgOut.className = 'mt-2 text-sm min-h-[1.25rem] font-medium ' + (res.okCount ? 'text-[#128C7E]' : 'text-red-600');
+    bulkCopy.disabled = res.okCount === 0;
+    bulkCsv.disabled = res.okCount === 0;
+  });
+
+  bulkResults.addEventListener('click', function (e) {
+    var btn = e.target.closest('[data-copy]');
+    if (!btn) return;
+    var link = btn.getAttribute('data-copy');
+    copyText(link, function () {
+      btn.textContent = 'Copied ✓';
+      setTimeout(function () { btn.textContent = 'Copy'; }, 1600);
+    });
+  });
+
+  bulkCopy.addEventListener('click', function () {
+    if (!lastBulk) return;
+    copyText(PingLinkLib.bulkToText(lastBulk.rows), function () {
+      bulkMsgOut.textContent = '✓ All links copied — one per line, ready to paste anywhere.';
+      bulkMsgOut.className = 'mt-2 text-sm min-h-[1.25rem] font-medium text-[#128C7E]';
+    });
+  });
+
+  bulkCsv.addEventListener('click', function () {
+    if (!lastBulk) return;
+    var blob = new Blob([PingLinkLib.bulkToCSV(lastBulk.rows)], { type: 'text/csv' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'pinglink-bulk-links.csv';
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 2000);
+  });
+
+  refresh();
+})();
+</script>
+</body>
+</html>
